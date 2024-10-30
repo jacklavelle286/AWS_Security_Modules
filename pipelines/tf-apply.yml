@@ -1,0 +1,96 @@
+trigger: none 
+
+parameters:
+  - name: environment
+    type: string
+    default: 'dev-1'
+    values:
+      - 'dev-1'
+      - 'poc-1'
+
+variables:
+  - name: environment
+    value: ${{ parameters.environment }}
+  - name: TF_VAR_environment
+    value: ${{ parameters.environment }}
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: TerraformPlanApplyJob
+    displayName: 'Terraform Plan and Apply Job'
+    steps:
+      # Check out the repository code
+      - checkout: self
+
+      # Assume AWS Role and Set Credentials
+      - task: AWSShellScript@1
+        inputs:
+          awsCredentials: 'aws_tooling_service_connection'
+          regionName: 'eu-west-2'
+          scriptType: 'inline'
+          inlineScript: |
+            ENVIRONMENT="${{ parameters.environment }}"
+
+            if [ "$ENVIRONMENT" == "dev-1" ]; then
+              ROLE_OUTPUT=$(aws sts assume-role --role-arn "arn:aws:iam::471112885139:role/BuildRole" --role-session-name "Dev1Session")
+            elif [ "$ENVIRONMENT" == "poc-1" ]; then
+              ROLE_OUTPUT=$(aws sts assume-role --role-arn "arn:aws:iam::975050324688:role/BuildRole" --role-session-name "Poc1Session")
+            else
+              echo "Invalid environment parameter"
+              exit 1
+            fi
+
+            export AWS_ACCESS_KEY_ID=$(echo $ROLE_OUTPUT | jq -r '.Credentials.AccessKeyId')
+            export AWS_SECRET_ACCESS_KEY=$(echo $ROLE_OUTPUT | jq -r '.Credentials.SecretAccessKey')
+            export AWS_SESSION_TOKEN=$(echo $ROLE_OUTPUT | jq -r '.Credentials.SessionToken')
+
+            echo "##vso[task.setvariable variable=ASSUMED_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
+            echo "##vso[task.setvariable variable=ASSUMED_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
+            echo "##vso[task.setvariable variable=ASSUMED_SESSION_TOKEN;issecret=true]$AWS_SESSION_TOKEN"
+
+            aws sts get-caller-identity
+        displayName: 'Assume AWS Role and Set Credentials'
+
+      # Install Terraform
+      - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+        inputs:
+          terraformVersion: 'latest'
+        displayName: 'Install Terraform'
+
+      # Terraform Init
+      - task: TerraformCLI@2
+        inputs:
+          command: 'init'
+          workingDirectory: '$(System.DefaultWorkingDirectory)'
+          commandOptions: '-reconfigure -backend-config="bucket=terraform-tf-state-security-operation-tt-$(environment)" -backend-config="key=terraform.tfstate" -backend-config="region=eu-west-2"'
+        env:
+          AWS_ACCESS_KEY_ID: $(ASSUMED_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(ASSUMED_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(ASSUMED_SESSION_TOKEN)
+        displayName: 'Terraform Init'
+
+      # Terraform Plan
+      - task: TerraformCLI@2
+        inputs:
+          command: 'plan'
+          workingDirectory: '$(System.DefaultWorkingDirectory)'
+          commandOptions: '-var="environment=$(environment)" -out=tfplan -input=false'
+        env:
+          AWS_ACCESS_KEY_ID: $(ASSUMED_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(ASSUMED_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(ASSUMED_SESSION_TOKEN)
+        displayName: 'Terraform Plan'
+
+      # Terraform Apply
+      - task: TerraformCLI@2
+        inputs:
+          command: 'apply'
+          workingDirectory: '$(System.DefaultWorkingDirectory)'
+          commandOptions: '-auto-approve -input=false tfplan'
+        env:
+          AWS_ACCESS_KEY_ID: $(ASSUMED_ACCESS_KEY_ID)
+          AWS_SECRET_ACCESS_KEY: $(ASSUMED_SECRET_ACCESS_KEY)
+          AWS_SESSION_TOKEN: $(ASSUMED_SESSION_TOKEN)
+        displayName: 'Terraform Apply'
