@@ -4,12 +4,6 @@ variable "aws_region" {
 }
 
 
-variable "environment" {
-  description = "The environment to deploy into"
-  type        = string
-  
-}
-
 variable "security_email_address" {
   type = string
 }

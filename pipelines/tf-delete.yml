@@ -1,18 +1,17 @@
-trigger: none 
+# tf-destroy.yml
+
+trigger: none
 
 parameters:
-  - name: environment
+  - name: CustomerAccountId
     type: string
-    default: 'dev-1'
-    values:
-      - 'dev-1'
-      - 'poc-1'
-
-variables:
-  - name: environment
-    value: ${{ parameters.environment }}
-  - name: TF_VAR_environment
-    value: ${{ parameters.environment }}
+    default: ''
+  - name: ServiceConnectionName
+    type: string
+    default: 'aws_tooling_service_connection'
+  - name: Region
+    type: string
+    default: 'eu-west-2'
 
 pool:
   vmImage: ubuntu-latest
@@ -27,29 +26,34 @@ jobs:
       # Assume AWS Role and Set Credentials
       - task: AWSShellScript@1
         inputs:
-          awsCredentials: 'aws_tooling_service_connection'
-          regionName: 'eu-west-2'
+          awsCredentials: ${{ parameters.ServiceConnectionName }}
+          regionName: ${{ parameters.Region }}
           scriptType: 'inline'
           inlineScript: |
-            ENVIRONMENT="${{ parameters.environment }}"
+            # Construct Role ARN and S3 bucket name dynamically
+            ROLE_ARN="arn:aws:iam::${{ parameters.CustomerAccountId }}:role/TFDeployBuildRole"
+            S3_BUCKET_NAME="tf-backend-${{ parameters.CustomerAccountId }}-${{ parameters.Region }}"
 
-            if [ "$ENVIRONMENT" == "dev-1" ]; then
-              ROLE_OUTPUT=$(aws sts assume-role --role-arn "arn:aws:iam::471112885139:role/BuildRole" --role-session-name "Dev1Session")
-            elif [ "$ENVIRONMENT" == "poc-1" ]; then
-              ROLE_OUTPUT=$(aws sts assume-role --role-arn "arn:aws:iam::975050324688:role/BuildRole" --role-session-name "Poc1Session")
-            else
-              echo "Invalid environment parameter"
+            # Assume the specified role
+            ROLE_OUTPUT=$(aws sts assume-role --role-arn "$ROLE_ARN" --role-session-name "DestroySession")
+
+            if [ $? -ne 0 ]; then
+              echo "Error assuming the role with ARN: $ROLE_ARN"
               exit 1
             fi
 
+            # Extract credentials from the assume-role output
             export AWS_ACCESS_KEY_ID=$(echo $ROLE_OUTPUT | jq -r '.Credentials.AccessKeyId')
             export AWS_SECRET_ACCESS_KEY=$(echo $ROLE_OUTPUT | jq -r '.Credentials.SecretAccessKey')
             export AWS_SESSION_TOKEN=$(echo $ROLE_OUTPUT | jq -r '.Credentials.SessionToken')
 
+            # Set the credentials as Azure DevOps pipeline variables
             echo "##vso[task.setvariable variable=ASSUMED_ACCESS_KEY_ID;issecret=true]$AWS_ACCESS_KEY_ID"
             echo "##vso[task.setvariable variable=ASSUMED_SECRET_ACCESS_KEY;issecret=true]$AWS_SECRET_ACCESS_KEY"
             echo "##vso[task.setvariable variable=ASSUMED_SESSION_TOKEN;issecret=true]$AWS_SESSION_TOKEN"
+            echo "##vso[task.setvariable variable=S3_BUCKET_NAME]$S3_BUCKET_NAME"
 
+            # Confirm identity for debugging purposes
             aws sts get-caller-identity
         displayName: 'Assume AWS Role and Set Credentials for Destroy'
 
@@ -64,7 +68,7 @@ jobs:
         inputs:
           command: 'init'
           workingDirectory: '$(System.DefaultWorkingDirectory)'
-          commandOptions: '-reconfigure -backend-config="bucket=terraform-tf-state-security-operation-tt-$(environment)" -backend-config="key=terraform.tfstate" -backend-config="region=eu-west-2"'
+          commandOptions: '-reconfigure -backend-config="bucket=$(S3_BUCKET_NAME)" -backend-config="key=terraform.tfstate" -backend-config="region=${{ parameters.Region }}"'
         env:
           AWS_ACCESS_KEY_ID: $(ASSUMED_ACCESS_KEY_ID)
           AWS_SECRET_ACCESS_KEY: $(ASSUMED_SECRET_ACCESS_KEY)
@@ -76,7 +80,7 @@ jobs:
         inputs:
           command: 'destroy'
           workingDirectory: '$(System.DefaultWorkingDirectory)'
-          commandOptions: '-auto-approve -var="environment=$(environment)" -input=false'
+          commandOptions: '-auto-approve -input=false'
         env:
           AWS_ACCESS_KEY_ID: $(ASSUMED_ACCESS_KEY_ID)
           AWS_SECRET_ACCESS_KEY: $(ASSUMED_SECRET_ACCESS_KEY)
