@@ -24,3 +24,5 @@ A collection of configurations for securely setting up AWS services. Each module
 - s3-baseline: Secure default configuration for S3 buckets.
 - secure-bucket: Template for creating a locked-down S3 bucket.
 - securityhub-baseline: Baseline for enabling and configuring AWS Security Hub
+
+There are also pipelines for `terraform plan`, `terraform apply` and `terraform destroy`.
